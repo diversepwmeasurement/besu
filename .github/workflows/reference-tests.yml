@@ -1,83 +1,100 @@
-name: reference-tests
-on:
-  workflow_dispatch:
-  pull_request:
-    branches:
-      - main
-      - release-*
-
-env:
-  GRADLE_OPTS: "-Xmx6g -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
-  total-runners: 10
-
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref
+    }}
+env:
+  GRADLE_OPTS: -Xmx6g -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true
+  total-runners: 10
 jobs:
   referenceTestEthereum:
-    runs-on: ubuntu-22.04
     permissions:
-      statuses: write
       checks: write
       packages: read
+      statuses: write
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      name: Checkout Repo
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.ref }}
+        submodules: recursive
+    - continue-on-error: true
+      name: Set up Java
+      uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93
+      with:
+        distribution: adopt-openj9
+        java-version: 17
+    - continue-on-error: true
+      name: setup gradle
+      uses: gradle/actions/setup-gradle@9e899d11ad247ec76be7a60bc1cf9d3abbb9e7f1
+      with:
+        cache-disabled: true
+    - continue-on-error: true
+      name: execute generate reference tests
+      run: ./gradlew ethereum:referencetests:blockchainReferenceTests ethereum:referencetests:generalstateReferenceTests
+        ethereum:referencetests:generalstateRegressionReferenceTests -Dorg.gradle.parallel=true
+        -Dorg.gradle.caching=true
+    - continue-on-error: true
+      name: list test files generated
+      run: find ethereum/referencetests/build/generated/sources/reference-test -name
+        "*.java" | sort >> filenames.txt
+    - continue-on-error: true
+      name: Split tests
+      run: ./.github/workflows/splitList.sh filenames.txt ${{env.total-runners}}
+    - continue-on-error: true
+      name: echo test file count
+      run: cat group_${{matrix.runner_index}}.txt | wc
+    - continue-on-error: true
+      name: convert to test suite classnames
+      run: cat group_${{matrix.runner_index}}.txt | sed -e 's/^.*java\///' -e 's@/@.@g'
+        -e 's/\.java//' -e 's/^/--tests /' > testClasses.txt
+    - continue-on-error: true
+      name: compose gradle args
+      run: tr '\n' ' ' < testClasses.txt > refTestArgs.txt
+    - continue-on-error: true
+      name: refTestArgs.txt
+      run: cat refTestArgs.txt
+    - continue-on-error: true
+      name: run reference tests
+      run: ./gradlew ethereum:referenceTests:referenceTests `cat refTestArgs.txt`
+    - continue-on-error: true
+      if: always()
+      name: Upload Test Report
+      uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3
+      with:
+        name: reference-test-node-${{matrix.runner_index}}-results
+        path: '**/build/test-results/referenceTests/TEST-*.xml'
     strategy:
       fail-fast: true
       matrix:
-        runner_index: [1,2,3,4,5,6,7,8,9,10]
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.ref }}
-          submodules: recursive
-      - name: Set up Java
-        uses: actions/setup-java@387ac29b308b003ca37ba93a6cab5eb57c8f5f93
-        with:
-          distribution: adopt-openj9
-          java-version: 17
-      - name: setup gradle
-        uses: gradle/actions/setup-gradle@9e899d11ad247ec76be7a60bc1cf9d3abbb9e7f1
-        with:
-          cache-disabled: true
-      - name: execute generate reference tests
-        run: ./gradlew ethereum:referencetests:blockchainReferenceTests ethereum:referencetests:generalstateReferenceTests ethereum:referencetests:generalstateRegressionReferenceTests -Dorg.gradle.parallel=true -Dorg.gradle.caching=true
-      - name: list test files generated
-        run: find ethereum/referencetests/build/generated/sources/reference-test -name "*.java" | sort >> filenames.txt
-      - name: Split tests
-        run: ./.github/workflows/splitList.sh filenames.txt ${{env.total-runners}}
-      - name: echo test file count
-        run: cat group_${{matrix.runner_index}}.txt | wc
-      - name: convert to test suite classnames
-        run: cat group_${{matrix.runner_index}}.txt | sed -e 's/^.*java\///' -e 's@/@.@g' -e 's/\.java//' -e 's/^/--tests /' > testClasses.txt
-      - name: compose gradle args
-        run: tr '\n' ' ' < testClasses.txt > refTestArgs.txt
-      - name: refTestArgs.txt
-        run: cat refTestArgs.txt
-      - name: run reference tests
-        run: ./gradlew ethereum:referenceTests:referenceTests `cat refTestArgs.txt`
-      - name: Upload Test Report
-        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3
-        if: always() # always run even if the previous step fails
-        with:
-          name: reference-test-node-${{matrix.runner_index}}-results
-          path: '**/build/test-results/referenceTests/TEST-*.xml'
+        runner_index:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
   reftests-passed:
-    name: "reftests-passed"
-    runs-on: ubuntu-22.04
-    needs: [ referenceTestEthereum ]
+    if: always()
+    name: reftests-passed
+    needs:
+    - referenceTestEthereum
     permissions:
       checks: write
       statuses: write
-    if: always()
+    runs-on: self-hosted
     steps:
-      # Fail if any `needs` job was not a success.
-      # Along with `if: always()`, this allows this job to act as a single required status check for the entire workflow.
-      - name: Fail on workflow error
-        run: exit 1
-        if: >-
-          ${{
-            contains(needs.*.result, 'failure')
-            || contains(needs.*.result, 'cancelled')
-            || contains(needs.*.result, 'skipped')
-          }}
+    - continue-on-error: true
+      if: "${{\n  contains(needs.*.result, 'failure')\n  || contains(needs.*.result,\
+        \ 'cancelled')\n  || contains(needs.*.result, 'skipped')\n}}"
+      name: Fail on workflow error
+      run: exit 1
+name: reference-tests
+on:
+  repository_dispatch:
+    types: trigger-ga___reference-tests.yml
